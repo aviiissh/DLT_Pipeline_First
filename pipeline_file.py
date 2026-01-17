@@ -1,4 +1,4 @@
-import dlt
+from pyspark import pipelines as dp
 from pyspark.sql import functions as F
 from pyspark.sql.functions import (
     col, current_timestamp, to_date, 
@@ -11,7 +11,7 @@ from pyspark.sql.window import Window
 # BRONZE - CUSTOMERS (streaming CSV)
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="customer_bronze_v1",
     comment="Raw customer data ingested from CSV files (Autoloader)",
     table_properties={
@@ -25,7 +25,7 @@ def customer_bronze():
         .option("cloudFiles.format", "csv")
         .option("header", "true")
         .option("inferSchema", "true")
-        .load("/Volumes/pipeline_01/delta_demo/raw_data/customers/")
+        .load("/Volumes/avish_practice/delta_demo/raw_data/customers/")
         .select(
             "*",
             current_timestamp().alias("processing_time"),
@@ -53,14 +53,14 @@ def customer_bronze():
 # SILVER - CUSTOMER DIMENSION
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="dim_customer_silver_v2",
     comment="Cleaned & enriched customer dimension",
     table_properties={"quality": "silver"}
 )
 def dim_customer_silver():
     customers = (
-        dlt.read_stream("customer_bronze_v1")
+        dp.read_stream("customer_bronze_v1")
         .drop("processing_time", "source_file")  # ← drop audit columns to prevent ambiguity
         .filter(col("customer_id").isNotNull())
         .select(
@@ -73,7 +73,7 @@ def dim_customer_silver():
         )
     )
 
-    geo = dlt.read("geography_silver")
+    geo = dp.read("geography_silver")
 
     return (
         customers
@@ -102,7 +102,7 @@ def dim_customer_silver():
 # BRONZE - ORDERS (streaming Parquet)
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="orders_bronze_v1",
     comment="Raw orders data ingested from Parquet files",
     table_properties={
@@ -114,7 +114,7 @@ def orders_bronze():
     return (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
-        .load("/Volumes/pipeline_01/delta_demo/raw_data/orders/")
+        .load("/Volumes/avish_practice/delta_demo/raw_data/orders/")
         .select(
             "*",
             current_timestamp().alias("processing_time"),
@@ -138,7 +138,7 @@ def orders_bronze():
 # SILVER - ORDERS FACT
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="orders_silver",
     comment="Order fact table enriched with dimensions",
     table_properties={
@@ -148,16 +148,16 @@ def orders_bronze():
 )
 def orders_silver():
     orders = (
-        dlt.read_stream("orders_bronze_v1")
+        dp.read_stream("orders_bronze_v1")
         .drop("processing_time", "source_file")  # ← prevent carry-over
     )
 
     products = (
-        dlt.read("product_silver_v2")
+        dp.read("product_silver_v2")
         .drop("processing_time", "source_file")  # if present
     )
 
-    customers = dlt.read("dim_customer_silver_v2")
+    customers = dp.read("dim_customer_silver_v2")
 
     enriched = (
         orders
@@ -187,7 +187,7 @@ def orders_silver():
 # BRONZE - PRODUCTS (streaming Parquet)
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="product_bronze_v1",
     comment="Raw product data ingested from Parquet files",
     table_properties={
@@ -199,7 +199,7 @@ def product_bronze():
     return (
         spark.readStream.format("cloudFiles")
         .option("cloudFiles.format", "parquet")
-        .load("/Volumes/pipeline_01/delta_demo/raw_data/products/")
+        .load("/Volumes/avish_practice/delta_demo/raw_data/products/")
         .select(
             "*",
             current_timestamp().alias("processing_time"),
@@ -212,14 +212,14 @@ def product_bronze():
 # SILVER - PRODUCTS
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="product_silver_v2",
     comment="Cleaned and enriched product dimension",
     table_properties={"quality": "silver"}
 )
 def product_silver():
     df = (
-        dlt.read_stream("product_bronze_v1")
+        dp.read_stream("product_bronze_v1")
         .drop("processing_time", "source_file")  # ← drop early
         .filter(col("product_id").isNotNull())
     )
@@ -245,7 +245,7 @@ def product_silver():
 # BRONZE - GEOGRAPHY (batch – single file)
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="geography_bronze_v1",
     comment="Raw geography reference data (single CSV)",
     table_properties={
@@ -258,7 +258,7 @@ def geography_bronze():
         spark.read.format("csv")
         .option("header", "true")
         .option("inferSchema", "true")
-        .load("/Volumes/pipeline_01/delta_demo/raw_data/geographies.csv")
+        .load("/Volumes/avish_practice/delta_demo/raw_data/geographies.csv")
         .select(
             "*",
             current_timestamp().alias("processing_time"),
@@ -271,7 +271,7 @@ def geography_bronze():
 # SILVER - GEOGRAPHY
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="geography_silver",
     comment="Cleaned geography reference data",
     table_properties={
@@ -281,7 +281,7 @@ def geography_bronze():
 )
 def geography_silver():
     return (
-        dlt.read("geography_bronze_v1")
+        dp.read("geography_bronze_v1")
         .drop("processing_time", "source_file")  # drop audit columns
         .filter(col("geography_id").isNotNull())
         .withColumn(
@@ -302,7 +302,7 @@ def geography_silver():
 # ───────────────────────────────────────────────
 
 # Helper base query (common for many gold tables)
-@dlt.table(
+@dp.table(
     name="gold_orders_enriched",
     comment="Temporary enriched view for gold layer calculations (not persisted as table)",
     spark_conf={"spark.databricks.delta.pipeline.avoidRepartition": "true"}
@@ -313,7 +313,7 @@ def gold_orders_enriched():
     Calculates derived metrics once to avoid repetition.
     """
     return (
-        dlt.read("orders_silver")
+        dp.read("orders_silver")
         .withColumn("total_amount", 
             col("quantity") * col("unit_price") * (lit(1.0) - col("discount"))
         )
@@ -334,13 +334,13 @@ def gold_orders_enriched():
 # Gold 1: Sales Summary by Date
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="sales_by_date",
     comment="Daily sales summary with key metrics",
     table_properties={"quality": "gold"}
 )
 def sales_by_date():
-    df = dlt.read("gold_orders_enriched")
+    df = dp.read("gold_orders_enriched")
 
     return (
         df
@@ -369,13 +369,13 @@ def sales_by_date():
 # Gold 2: Sales Summary by Product Category
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="sales_by_category",
     comment="Sales performance aggregated by product category",
     table_properties={"quality": "gold"}
 )
 def sales_by_category():
-    df = dlt.read("gold_orders_enriched")
+    df = dp.read("gold_orders_enriched")
 
     category_agg = (
         df
@@ -412,13 +412,13 @@ def sales_by_category():
 # Gold 3: Sales Summary by Geography
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="sales_by_geography",
     comment="Sales performance by country/state/city",
     table_properties={"quality": "gold"}
 )
 def sales_by_geography():
-    df = dlt.read("gold_orders_enriched")
+    df = dp.read("gold_orders_enriched")
 
     return (
         df
@@ -445,13 +445,13 @@ def sales_by_geography():
 # Gold 4: Customer Analytics (RFM-like + segmentation)
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="customer_analytics",
     comment="Customer-level lifetime metrics and segmentation",
     table_properties={"quality": "gold"}
 )
 def customer_analytics():
-    df = dlt.read("gold_orders_enriched")
+    df = dp.read("gold_orders_enriched")
 
     return (
         df
@@ -486,13 +486,13 @@ def customer_analytics():
 # Gold 5: Product Performance
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="product_performance",
     comment="Product-level sales and profitability metrics",
     table_properties={"quality": "gold"}
 )
 def product_performance():
-    df = dlt.read("gold_orders_enriched")
+    df = dp.read("gold_orders_enriched")
 
     return (
         df
@@ -526,13 +526,13 @@ def product_performance():
 # Gold 6: Monthly Sales Trend
 # ───────────────────────────────────────────────
 
-@dlt.table(
+@dp.table(
     name="monthly_sales_trend",
     comment="Monthly aggregated sales trends",
     table_properties={"quality": "gold"}
 )
 def monthly_sales_trend():
-    df = dlt.read("gold_orders_enriched")
+    df = dp.read("gold_orders_enriched")
 
     return (
         df
